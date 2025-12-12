@@ -67,43 +67,59 @@ jobs:
           cp -r /tmp/vuln-scanner/xu_li_dataset .
           cp -r /tmp/vuln-scanner/model .
 
-      - name: Download model from release
+      - name: Download model and vocabulary from release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p models
-          MODEL_URL="https://github.com/hoangduy0308/c-vulnerability-detection/releases/latest/download/best_model.pt"
+          mkdir -p output
+          REPO_URL="https://github.com/hoangduy0308/c-vulnerability-detection/releases/latest/download"
           
-          # Download and verify it's a valid file (not HTML)
-          if curl -sL -o models/best_model.pt "$MODEL_URL" && [ -s models/best_model.pt ]; then
-            # Check if file is valid (not HTML)
-            if file models/best_model.pt | grep -q "data\|archive"; then
-              echo "Downloaded model from release ($(du -h models/best_model.pt | cut -f1))"
+          # Download model
+          echo "Downloading model..."
+          if curl -sL -o output/best_model.pt "${REPO_URL}/best_model.pt" && [ -s output/best_model.pt ]; then
+            if file output/best_model.pt | grep -q "data\|archive"; then
+              echo "Downloaded model from release ($(du -h output/best_model.pt | cut -f1))"
             else
-              echo "Downloaded file is not a valid model, checking cloned repo..."
-              rm -f models/best_model.pt
-              if [ -f "/tmp/vuln-scanner/output/best_model.pt" ]; then
-                cp /tmp/vuln-scanner/output/best_model.pt models/
-                echo "Using model from cloned repo"
-              else
-                echo "::warning::No valid model found. Skipping scan."
-                echo "SKIP_SCAN=true" >> $GITHUB_ENV
-              fi
+              echo "Downloaded file is not a valid model, using from cloned repo..."
+              rm -f output/best_model.pt
             fi
-          elif [ -f "/tmp/vuln-scanner/output/best_model.pt" ]; then
-            echo "Using model from cloned repo"
-            cp /tmp/vuln-scanner/output/best_model.pt models/
-          else
-            echo "::warning::No model found. Skipping scan."
-            echo "SKIP_SCAN=true" >> $GITHUB_ENV
           fi
           
-          # Debug: show file info
-          if [ -f models/best_model.pt ]; then
-            echo "Model file info:"
-            ls -lh models/best_model.pt
-            file models/best_model.pt
+          # Download vocabulary
+          echo "Downloading vocabulary..."
+          if curl -sL -o output/vocabulary.json "${REPO_URL}/vocabulary.json" && [ -s output/vocabulary.json ]; then
+            if file output/vocabulary.json | grep -q "JSON\|text\|ASCII"; then
+              echo "Downloaded vocabulary from release"
+            else
+              echo "Downloaded file is not valid vocabulary, using from cloned repo..."
+              rm -f output/vocabulary.json
+            fi
           fi
+          
+          # Fallback to cloned repo files
+          if [ ! -f output/best_model.pt ]; then
+            if [ -f "/tmp/vuln-scanner/output/output debiased/best_model.pt" ]; then
+              cp "/tmp/vuln-scanner/output/output debiased/best_model.pt" output/
+              echo "Using model from cloned repo"
+            else
+              echo "::warning::No valid model found. Skipping scan."
+              echo "SKIP_SCAN=true" >> $GITHUB_ENV
+            fi
+          fi
+          
+          if [ ! -f output/vocabulary.json ]; then
+            if [ -f "/tmp/vuln-scanner/output/dataset_juliet_debiased/vocabulary.json" ]; then
+              cp /tmp/vuln-scanner/output/dataset_juliet_debiased/vocabulary.json output/
+              echo "Using vocabulary from cloned repo"
+            else
+              echo "::warning::No vocabulary found. Skipping scan."
+              echo "SKIP_SCAN=true" >> $GITHUB_ENV
+            fi
+          fi
+          
+          # Debug info
+          echo "=== Files in output/ ==="
+          ls -lh output/
 
       - name: Run vulnerability scan (changed files only)
         if: env.SKIP_SCAN != 'true' && github.event_name == 'pull_request'
@@ -115,7 +131,7 @@ jobs:
             --output-file c-vuln-results.sarif \
             --prob-threshold 0.5 \
             --fail-threshold 0.5 \
-            --model-dir models \
+            --model-dir output \
             --verbose
 
       - name: Run vulnerability scan (full)
@@ -127,7 +143,7 @@ jobs:
             --output-file c-vuln-results.sarif \
             --prob-threshold 0.5 \
             --fail-threshold 0.5 \
-            --model-dir models \
+            --model-dir output \
             --verbose
 
       - name: Create empty SARIF if scan was skipped or failed
