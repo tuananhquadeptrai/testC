@@ -1,24 +1,36 @@
-name: C Vulnerability Scan
+name: C Vulnerability Scan (Reusable)
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - '**/*.c'
-      - '**/*.cpp'
-      - '**/*.cc'
-      - '**/*.cxx'
-      - '**/*.h'
-      - '**/*.hpp'
-      - '**/*.hxx'
-  push:
-    branches: [main]
-    paths:
-      - '**/*.c'
-      - '**/*.cpp'
-      - '**/*.h'
-      - '**/*.hpp'
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      model_source:
+        description: 'Model source: release (default) or custom'
+        required: false
+        type: string
+        default: 'release'
+      model_url:
+        description: 'Custom model URL (required if model_source is custom)'
+        required: false
+        type: string
+      vocab_url:
+        description: 'Custom vocabulary URL (required if model_source is custom)'
+        required: false
+        type: string
+      prob_threshold:
+        description: 'Probability threshold for reporting (0.0-1.0)'
+        required: false
+        type: number
+        default: 0.5
+      fail_threshold:
+        description: 'Fail threshold for CI (0.0-1.0)'
+        required: false
+        type: number
+        default: 0.5
+      scan_path:
+        description: 'Path to scan'
+        required: false
+        type: string
+        default: '.'
 
 permissions:
   contents: read
@@ -67,15 +79,13 @@ jobs:
           cp -r /tmp/vuln-scanner/xu_li_dataset .
           cp -r /tmp/vuln-scanner/model .
 
-      - name: Download model and vocabulary from release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Download model and vocabulary (release)
+        if: inputs.model_source == 'release'
         run: |
           mkdir -p output
           REPO_URL="https://github.com/hoangduy0308/c-vulnerability-detection/releases/latest/download"
-          
-          # Download model
-          echo "Downloading model..."
+
+          echo "Downloading model from release..."
           if curl -sL -o output/best_model.pt "${REPO_URL}/best_model.pt" && [ -s output/best_model.pt ]; then
             if file output/best_model.pt | grep -q "data\|archive"; then
               echo "Downloaded model from release ($(du -h output/best_model.pt | cut -f1))"
@@ -84,9 +94,8 @@ jobs:
               rm -f output/best_model.pt
             fi
           fi
-          
-          # Download vocabulary
-          echo "Downloading vocabulary..."
+
+          echo "Downloading vocabulary from release..."
           if curl -sL -o output/vocabulary.json "${REPO_URL}/vocabulary.json" && [ -s output/vocabulary.json ]; then
             if file output/vocabulary.json | grep -q "JSON\|text\|ASCII"; then
               echo "Downloaded vocabulary from release"
@@ -95,24 +104,21 @@ jobs:
               rm -f output/vocabulary.json
             fi
           fi
-          
-          # Always prefer vocabulary from cloned repo (matches trained model)
-          if [ -f "/tmp/vuln-scanner/output/dataset_juliet_debiased/vocabulary.json" ]; then
-            cp /tmp/vuln-scanner/output/dataset_juliet_debiased/vocabulary.json output/vocabulary.json
-            echo "Overwriting with juliet_debiased vocabulary (matches trained model)"
-          fi
-          
+
           # Fallback to cloned repo files
           if [ ! -f output/best_model.pt ]; then
-            if [ -f "/tmp/vuln-scanner/output/output debiased/best_model.pt" ]; then
+            if [ -f "/tmp/vuln-scanner/output/model_final/best_model.pt" ]; then
+              cp "/tmp/vuln-scanner/output/model_final/best_model.pt" output/
+              echo "Using model from cloned repo (model_final)"
+            elif [ -f "/tmp/vuln-scanner/output/output debiased/best_model.pt" ]; then
               cp "/tmp/vuln-scanner/output/output debiased/best_model.pt" output/
-              echo "Using model from cloned repo"
+              echo "Using model from cloned repo (output debiased)"
             else
               echo "::warning::No valid model found. Skipping scan."
               echo "SKIP_SCAN=true" >> $GITHUB_ENV
             fi
           fi
-          
+
           if [ ! -f output/vocabulary.json ]; then
             if [ -f "/tmp/vuln-scanner/output/dataset_juliet_debiased/vocabulary.json" ]; then
               cp /tmp/vuln-scanner/output/dataset_juliet_debiased/vocabulary.json output/
@@ -122,33 +128,44 @@ jobs:
               echo "SKIP_SCAN=true" >> $GITHUB_ENV
             fi
           fi
-          
-          # Debug info
+
           echo "=== Files in output/ ==="
           ls -lh output/
 
-      - name: Run vulnerability scan (changed files only)
-        if: env.SKIP_SCAN != 'true' && github.event_name == 'pull_request'
+      - name: Download model and vocabulary (custom)
+        if: inputs.model_source == 'custom'
         run: |
-          python -m vuln_scanner.cli \
-            --only-changed \
-            --base-ref origin/${{ github.base_ref }} \
-            --output-format sarif \
-            --output-file c-vuln-results.sarif \
-            --prob-threshold 0.5 \
-            --fail-threshold 0.5 \
-            --model-dir output \
-            --verbose
+          mkdir -p output
 
-      - name: Run vulnerability scan (full)
-        if: env.SKIP_SCAN != 'true' && github.event_name != 'pull_request'
+          if [ -z "${{ inputs.model_url }}" ] || [ -z "${{ inputs.vocab_url }}" ]; then
+            echo "::error::Custom model_source requires both model_url and vocab_url"
+            exit 1
+          fi
+
+          echo "Downloading custom model..."
+          if ! curl -sL -o output/best_model.pt "${{ inputs.model_url }}"; then
+            echo "::error::Failed to download model from ${{ inputs.model_url }}"
+            exit 1
+          fi
+
+          echo "Downloading custom vocabulary..."
+          if ! curl -sL -o output/vocabulary.json "${{ inputs.vocab_url }}"; then
+            echo "::error::Failed to download vocabulary from ${{ inputs.vocab_url }}"
+            exit 1
+          fi
+
+          echo "=== Files in output/ ==="
+          ls -lh output/
+
+      - name: Run vulnerability scan
+        if: env.SKIP_SCAN != 'true'
         run: |
           python -m vuln_scanner.cli \
-            --path . \
+            --path "${{ inputs.scan_path }}" \
             --output-format sarif \
             --output-file c-vuln-results.sarif \
-            --prob-threshold 0.5 \
-            --fail-threshold 0.5 \
+            --prob-threshold ${{ inputs.prob_threshold }} \
+            --fail-threshold ${{ inputs.fail_threshold }} \
             --model-dir output \
             --verbose
 
