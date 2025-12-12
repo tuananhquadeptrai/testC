@@ -96,6 +96,12 @@ jobs:
             fi
           fi
           
+          # Always prefer vocabulary from cloned repo (matches trained model)
+          if [ -f "/tmp/vuln-scanner/output/dataset_juliet_debiased/vocabulary.json" ]; then
+            cp /tmp/vuln-scanner/output/dataset_juliet_debiased/vocabulary.json output/vocabulary.json
+            echo "Overwriting with juliet_debiased vocabulary (matches trained model)"
+          fi
+          
           # Fallback to cloned repo files
           if [ ! -f output/best_model.pt ]; then
             if [ -f "/tmp/vuln-scanner/output/output debiased/best_model.pt" ]; then
