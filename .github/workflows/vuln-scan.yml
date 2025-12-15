@@ -1,216 +1,77 @@
-name: C Vulnerability Scan (Reusable)
+# ==============================================================================
+# C Vulnerability Scanner - Caller Workflow Example
+# ==============================================================================
+# Copy this file to your repository at: .github/workflows/vuln-scan.yml
+#
+# This workflow calls the reusable vulnerability scanner from:
+# https://github.com/hoangduy0308/c-vulnerability-detection
+#
+# For more information, see: docs/USAGE-IN-OTHER-REPOS.md
+# ==============================================================================
+
+name: C Vulnerability Scan
 
 on:
-  workflow_call:
-    inputs:
-      model_source:
-        description: 'Model source: release (default) or custom'
-        required: false
-        type: string
-        default: 'release'
-      model_url:
-        description: 'Custom model URL (required if model_source is custom)'
-        required: false
-        type: string
-      vocab_url:
-        description: 'Custom vocabulary URL (required if model_source is custom)'
-        required: false
-        type: string
-      scanner_version:
-        description: 'Version/ref of scanner repo to clone'
-        required: false
-        type: string
-        default: 'main'
-      only_changed:
-        description: 'Scan only changed files (for PRs)'
-        required: false
-        type: boolean
-        default: false
-      base_ref:
-        description: 'Base ref for changed files detection'
-        required: false
-        type: string
-        default: ''
-      prob_threshold:
-        description: 'Probability threshold for reporting (0.0-1.0)'
-        required: false
-        type: number
-        default: 0.5
-      fail_threshold:
-        description: 'Fail threshold for CI (0.0-1.0)'
-        required: false
-        type: number
-        default: 0.5
-      scan_path:
-        description: 'Path to scan'
-        required: false
-        type: string
-        default: '.'
+  push:
+    branches: [main, master]
+    paths:
+      - '**/*.c'
+      - '**/*.h'
 
-permissions:
-  contents: read
-  security-events: write
+  pull_request:
+    paths:
+      - '**/*.c'
+      - '**/*.h'
+
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
 
 jobs:
-  vuln-scan:
-    name: Vulnerability Scan
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  vulnerability-scan:
+    name: Scan for Vulnerabilities
+    uses: hoangduy0308/c-vulnerability-detection/.github/workflows/vuln-scan-reusable.yml@main
+    with:
+      # ========================================================================
+      # Model Configuration
+      # ========================================================================
+      # Use 'release' (default) to download model from GitHub Releases
+      # Use 'custom' to provide your own model URLs
+      model_source: 'release'
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      # For custom model (uncomment if model_source: 'custom'):
+      # model_url: 'https://your-server.com/path/to/model.pt'
+      # vocab_url: 'https://your-server.com/path/to/vocabulary.json'
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+      # ========================================================================
+      # Scan Configuration
+      # ========================================================================
+      # Path to scan (relative to repository root)
+      scan_path: '.'
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libclang-dev
+      # Probability threshold for reporting vulnerabilities (0.0-1.0)
+      # Lower = more sensitive, Higher = fewer false positives
+      prob_threshold: 0.5
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install scikit-learn numpy tqdm libclang
+      # Threshold to fail the CI check (0.0-1.0)
+      # Set higher than prob_threshold to report but not fail
+      fail_threshold: 0.5
 
-      - name: Install vuln_scanner from main repo
-        run: |
-          git clone --depth 1 --branch ${{ inputs.scanner_version }} https://github.com/hoangduy0308/c-vulnerability-detection.git /tmp/vuln-scanner
-          cp -r /tmp/vuln-scanner/vuln_scanner .
-          cp -r /tmp/vuln-scanner/xu_li_dataset .
-          cp -r /tmp/vuln-scanner/model .
+      # ========================================================================
+      # PR-specific: Scan only changed files
+      # ========================================================================
+      # Set to true to only scan files changed in the PR
+      only_changed: false
 
-      - name: Download model and vocabulary (release)
-        if: inputs.model_source == 'release'
-        run: |
-          mkdir -p output
-          REPO_URL="https://github.com/hoangduy0308/c-vulnerability-detection/releases/latest/download"
+      # Base branch for comparison (auto-detected if empty)
+      # base_ref: 'main'
 
-          echo "Downloading model from release..."
-          if curl -fsSL -o output/best_model.pt "${REPO_URL}/best_model.pt" && [ -s output/best_model.pt ]; then
-            if file output/best_model.pt | grep -q "data\|archive"; then
-              echo "Downloaded model from release ($(du -h output/best_model.pt | cut -f1))"
-            else
-              echo "Downloaded file is not a valid model, using from cloned repo..."
-              rm -f output/best_model.pt
-            fi
-          fi
+      # ========================================================================
+      # Scanner Version
+      # ========================================================================
+      # Version/branch/tag of the scanner to use
+      scanner_version: 'main'
 
-          echo "Downloading vocabulary from release..."
-          if curl -fsSL -o output/vocabulary.json "${REPO_URL}/vocabulary.json" && [ -s output/vocabulary.json ]; then
-            if file output/vocabulary.json | grep -q "JSON\|text\|ASCII"; then
-              echo "Downloaded vocabulary from release"
-            else
-              echo "Downloaded file is not valid vocabulary, using from cloned repo..."
-              rm -f output/vocabulary.json
-            fi
-          fi
-
-          # Fallback to cloned repo files
-          if [ ! -f output/best_model.pt ]; then
-            if [ -f "/tmp/vuln-scanner/output/model_final/best_model.pt" ]; then
-              cp "/tmp/vuln-scanner/output/model_final/best_model.pt" output/
-              echo "Using model from cloned repo (model_final)"
-            elif [ -f "/tmp/vuln-scanner/output/output debiased/best_model.pt" ]; then
-              cp "/tmp/vuln-scanner/output/output debiased/best_model.pt" output/
-              echo "Using model from cloned repo (output debiased)"
-            else
-              echo "::warning::No valid model found. Skipping scan."
-              echo "SKIP_SCAN=true" >> $GITHUB_ENV
-            fi
-          fi
-
-          if [ ! -f output/vocabulary.json ]; then
-            if [ -f "/tmp/vuln-scanner/output/model_final/vocabulary.json" ]; then
-              cp /tmp/vuln-scanner/output/model_final/vocabulary.json output/
-              echo "Using vocabulary from model_final"
-            elif [ -f "/tmp/vuln-scanner/output/dataset_juliet/vocabulary.json" ]; then
-              cp /tmp/vuln-scanner/output/dataset_juliet/vocabulary.json output/
-              echo "Using vocabulary from dataset_juliet"
-            elif [ -f "/tmp/vuln-scanner/output/dataset_juliet_debiased/vocabulary.json" ]; then
-              cp /tmp/vuln-scanner/output/dataset_juliet_debiased/vocabulary.json output/
-              echo "Using vocabulary from dataset_juliet_debiased"
-            else
-              echo "::warning::No vocabulary found. Skipping scan."
-              echo "SKIP_SCAN=true" >> $GITHUB_ENV
-            fi
-          fi
-
-          echo "=== Files in output/ ==="
-          ls -lh output/
-
-      - name: Download model and vocabulary (custom)
-        if: inputs.model_source == 'custom'
-        run: |
-          mkdir -p output
-
-          # Validate HTTPS URLs
-          if [[ ! "${{ inputs.model_url }}" =~ ^https:// ]]; then
-            echo "::error::model_url must use HTTPS"
-            exit 1
-          fi
-          if [[ ! "${{ inputs.vocab_url }}" =~ ^https:// ]]; then
-            echo "::error::vocab_url must use HTTPS"
-            exit 1
-          fi
-
-          if [ -z "${{ inputs.model_url }}" ] || [ -z "${{ inputs.vocab_url }}" ]; then
-            echo "::error::Custom model_source requires both model_url and vocab_url"
-            exit 1
-          fi
-
-          echo "Downloading custom model..."
-          if ! curl -fsSL -o output/best_model.pt "${{ inputs.model_url }}"; then
-            echo "::error::Failed to download model from ${{ inputs.model_url }}"
-            exit 1
-          fi
-
-          echo "Downloading custom vocabulary..."
-          if ! curl -fsSL -o output/vocabulary.json "${{ inputs.vocab_url }}"; then
-            echo "::error::Failed to download vocabulary from ${{ inputs.vocab_url }}"
-            exit 1
-          fi
-
-          echo "=== Files in output/ ==="
-          ls -lh output/
-
-      - name: Run vulnerability scan
-        if: env.SKIP_SCAN != 'true'
-        run: |
-          python -m vuln_scanner.cli \
-            --path "${{ inputs.scan_path }}" \
-            --output-format sarif \
-            --output-file c-vuln-results.sarif \
-            --prob-threshold ${{ inputs.prob_threshold }} \
-            --fail-threshold ${{ inputs.fail_threshold }} \
-            --model-dir output \
-            --verbose
-
-      - name: Create empty SARIF if scan was skipped or failed
-        if: always()
-        run: |
-          if [ ! -f c-vuln-results.sarif ]; then
-            echo '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"c-vuln-scanner","version":"1.0.0"}},"results":[]}]}' > c-vuln-results.sarif
-          fi
-
-      - name: Upload SARIF to GitHub Security
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: c-vuln-results.sarif
-          category: c-vulnerability-detection
-
-      - name: Upload scan results artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: vulnerability-scan-results
-          path: c-vuln-results.sarif
-          if-no-files-found: ignore
-          retention-days: 30
+    # Required permissions for SARIF upload
+    permissions:
+      contents: read
+      security-events: write
